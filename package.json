@@ -1,0 +1,54 @@
+{
+  "name": "cipherforge",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "bin": {
+    "cipherforge": "./cli/cipherforge.ts"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "preview": "vite preview",
+    "cli": "tsx cli/cipherforge.ts",
+    "typecheck": "tsc -b"
+  },
+  "dependencies": {
+    "bs58": "^6.0.0",
+    "clsx": "^2.1.1",
+    "crypto-js": "^4.2.0",
+    "js-beautify": "^1.15.4",
+    "lucide-react": "^1.14.0",
+    "pako": "^2.1.0",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
+    "webcrack": "^2.16.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/crypto-js": "^4.2.2",
+    "@types/js-beautify": "^1.14.3",
+    "@types/node": "^24.12.2",
+    "@types/pako": "^2.0.4",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "@vitest/ui": "^4.1.5",
+    "autoprefixer": "^10.5.0",
+    "eslint": "^10.2.1",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.5.0",
+    "jsdom": "^28.1.0",
+    "postcss": "^8.5.14",
+    "tailwindcss": "^3.4.19",
+    "tsx": "^4.21.0",
+    "typescript": "~6.0.2",
+    "typescript-eslint": "^8.58.2",
+    "vite": "^8.0.10",
+    "vitest": "^4.1.5"
+  }
+}
