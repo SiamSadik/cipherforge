@@ -1,7 +1,23 @@
 import * as JsBeautify from 'js-beautify';
-import { webcrack } from 'webcrack';
 import type { OpDefinition } from '../types';
 import { toText } from '../util';
+
+// webcrack pulls in Babel + node-builtin shims that are heavy and can crash
+// during initial module evaluation in some browsers. Lazy-load it only when
+// the user actually runs the op so the rest of the app stays snappy.
+type WebcrackResult = { code: string };
+type WebcrackFn = (
+  code: string,
+  options: { jsx: boolean; unminify: boolean; deobfuscate: boolean; unpack: boolean; mangle: boolean },
+) => Promise<WebcrackResult>;
+
+let webcrackPromise: Promise<WebcrackFn> | null = null;
+async function loadWebcrack(): Promise<WebcrackFn> {
+  if (!webcrackPromise) {
+    webcrackPromise = import('webcrack').then((mod) => mod.webcrack as unknown as WebcrackFn);
+  }
+  return webcrackPromise;
+}
 
 // js-beautify exposes a `js` function differently depending on bundler vs Node ESM.
 // Try the named export first, then the default export, then the namespace itself.
@@ -70,6 +86,7 @@ export const webcrackDeobfuscate: OpDefinition = {
   ],
   run: async (input, args) => {
     const code = toText(input);
+    const webcrack = await loadWebcrack();
     const result = await webcrack(code, {
       jsx: Boolean(args.jsx ?? true),
       unminify: Boolean(args.unminify ?? true),
