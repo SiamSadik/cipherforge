@@ -1,10 +1,15 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Trash2 } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Download as DownloadIcon, Trash2, Upload as UploadIcon } from 'lucide-react';
 import { InputPane, OutputPane } from './components/InputOutputPanes';
 import { MagicPanel } from './components/MagicPanel';
 import { OperationCatalog } from './components/OperationCatalog';
 import { RecipeStepCard } from './components/RecipeStepCard';
-import { suggestNextOp, type MagicCandidate } from './ops/magic';
+import {
+  recursiveMagic,
+  suggestNextOp,
+  type MagicCandidate,
+  type MagicChainStep,
+} from './ops/magic';
 import { runPipeline } from './ops/pipeline';
 import { ALL_OPS, getOp } from './ops/registry';
 import type { ArgValue, OpDefinition, PipelineResult, RecipeStep } from './ops/types';
@@ -59,7 +64,10 @@ function App() {
   const [recipe, setRecipe] = useState<RecipeStep[]>(persisted?.recipe ?? defaultRecipe());
   const [result, setResult] = useState<PipelineResult | null>(null);
   const [magic, setMagic] = useState<MagicCandidate[] | null>(null);
+  const [magicChain, setMagicChain] = useState<MagicChainStep[] | null>(null);
+  const [magicBusy, setMagicBusy] = useState(false);
   const [draggingIdx, setDraggingIdx] = useState<number | null>(null);
+  const importFileRef = useRef<HTMLInputElement>(null);
 
   const inputBuffer = useMemo(
     () => inputBytes ?? utf8Encoder.encode(inputText),
@@ -160,15 +168,94 @@ function App() {
     setInputText(text);
   };
 
+  // Auto-suggest on input change (debounced).
+  useEffect(() => {
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      const cands = await suggestNextOp(inputBuffer);
+      if (!cancelled) {
+        setMagic(cands);
+        setMagicChain(null);
+      }
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [inputBuffer]);
+
   const handleMagic = async () => {
     const cands = await suggestNextOp(inputBuffer);
     setMagic(cands);
   };
 
+  const handleRunChain = async () => {
+    setMagicBusy(true);
+    try {
+      const chain = await recursiveMagic(inputBuffer);
+      setMagicChain(chain);
+    } finally {
+      setMagicBusy(false);
+    }
+  };
+
+  const handleApplyChain = (chain: MagicChainStep[]) => {
+    const newSteps: RecipeStep[] = [];
+    for (const c of chain) {
+      const op = getOp(c.opId);
+      if (op) newSteps.push(makeStep(op));
+    }
+    if (newSteps.length === 0) return;
+    setRecipe((cur) => [...cur, ...newSteps]);
+    setMagicChain(null);
+  };
+
   const handlePickMagic = (opId: string) => {
     const op = getOp(opId);
     if (op) handleAddOp(op);
-    setMagic(null);
+  };
+
+  const handleExportRecipe = () => {
+    const data = {
+      version: 1,
+      app: 'cipherforge',
+      exportedAt: new Date().toISOString(),
+      input: inputBytes ? null : inputText,
+      recipe: recipe.map((s) => ({ opId: s.opId, args: s.args, enabled: s.enabled })),
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `cipherforge-recipe-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImportRecipe = async (file: File) => {
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text) as {
+        recipe: { opId: string; args: Record<string, ArgValue>; enabled: boolean }[];
+        input?: string | null;
+      };
+      const newRecipe: RecipeStep[] = [];
+      for (const s of data.recipe ?? []) {
+        const op = getOp(s.opId);
+        if (!op) continue;
+        const step = makeStep(op);
+        step.args = { ...step.args, ...s.args };
+        step.enabled = s.enabled !== false;
+        newRecipe.push(step);
+      }
+      setRecipe(newRecipe);
+      if (typeof data.input === 'string') {
+        setInputBytes(null);
+        setInputText(data.input);
+      }
+    } catch (err) {
+      alert(`Failed to import recipe: ${(err as Error).message}`);
+    }
   };
 
   return (
@@ -193,6 +280,32 @@ function App() {
           <span className="hidden sm:inline">{ALL_OPS.length} operations</span>
           <span className="hidden sm:inline">·</span>
           <span className="hidden sm:inline">runs locally in your browser</span>
+          <button
+            onClick={handleExportRecipe}
+            disabled={recipe.length === 0}
+            className="flex items-center gap-1 rounded border border-ink-800 px-1.5 py-0.5 text-[10px] text-ink-400 hover:border-ink-600 hover:text-ink-100 disabled:opacity-30"
+            title="Download the current recipe as JSON"
+          >
+            <DownloadIcon size={11} /> Export
+          </button>
+          <button
+            onClick={() => importFileRef.current?.click()}
+            className="flex items-center gap-1 rounded border border-ink-800 px-1.5 py-0.5 text-[10px] text-ink-400 hover:border-ink-600 hover:text-ink-100"
+            title="Load a previously-saved recipe JSON"
+          >
+            <UploadIcon size={11} /> Import
+          </button>
+          <input
+            ref={importFileRef}
+            type="file"
+            accept="application/json,.json"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) handleImportRecipe(f);
+              e.target.value = '';
+            }}
+          />
           <a
             href="https://github.com/SiamSadik/cipherforge"
             target="_blank"
@@ -224,11 +337,18 @@ function App() {
           />
         </main>
         <aside className="flex h-full flex-col gap-3 overflow-hidden">
-          {magic && (
+          {magic && magic.length > 0 && (
             <MagicPanel
               candidates={magic}
+              chain={magicChain}
               onPick={handlePickMagic}
-              onClose={() => setMagic(null)}
+              onApplyChain={handleApplyChain}
+              onRunChain={handleRunChain}
+              onClose={() => {
+                setMagic(null);
+                setMagicChain(null);
+              }}
+              busy={magicBusy}
             />
           )}
           <div className="flex flex-col overflow-hidden rounded-lg border border-ink-800 bg-ink-900/40">

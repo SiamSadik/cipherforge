@@ -10,22 +10,34 @@
  *   cipherforge magic < unknown.txt
  */
 
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir, stat, mkdir, writeFile } from 'node:fs/promises';
+import { join, basename, relative, dirname } from 'node:path';
 import { ALL_OPS, getOp, opsByCategory, CATEGORY_ORDER } from '../src/ops/registry';
 import { runPipeline } from '../src/ops/pipeline';
 import { suggestNextOp } from '../src/ops/magic';
 import type { ArgValue } from '../src/ops/types';
 
 interface Parsed {
-  command: 'run' | 'list' | 'help' | 'magic';
+  command: 'run' | 'list' | 'help' | 'magic' | 'batch';
   pipe: { opId: string; args: Record<string, ArgValue> }[];
   inputFile?: string;
+  inputDir?: string;
+  outputDir?: string;
+  filterGlob?: string;
+  recursive: boolean;
   outputBinary: boolean;
+  strict: boolean;
 }
 
 function parseArgs(argv: string[]): Parsed {
   const args = argv.slice(2);
-  const out: Parsed = { command: 'run', pipe: [], outputBinary: false };
+  const out: Parsed = {
+    command: 'run',
+    pipe: [],
+    outputBinary: false,
+    strict: false,
+    recursive: false,
+  };
   const remaining: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -42,8 +54,19 @@ function parseArgs(argv: string[]): Parsed {
         .map((s) => parseStep(s));
     } else if (a === '--input' || a === '-i') {
       out.inputFile = args[++i];
+    } else if (a === '--input-dir') {
+      out.inputDir = args[++i];
+      out.command = 'batch';
+    } else if (a === '--output-dir') {
+      out.outputDir = args[++i];
+    } else if (a === '--filter') {
+      out.filterGlob = args[++i];
+    } else if (a === '--recursive' || a === '-r') {
+      out.recursive = true;
     } else if (a === '--binary' || a === '-b') {
       out.outputBinary = true;
+    } else if (a === '--strict') {
+      out.strict = true;
     } else {
       remaining.push(a);
     }
@@ -105,10 +128,15 @@ function showHelp(): void {
   process.stdout.write(`  cipherforge magic                                  Suggest ops to run on the input\n`);
   process.stdout.write(`  cipherforge --list                                 List every available operation\n`);
   process.stdout.write(`  cipherforge --binary <op>                          Write raw bytes to stdout (no UTF-8 decoding)\n`);
+  process.stdout.write(`  cipherforge --strict <op>...                       Exit non-zero if any step fails (default: warn + continue)\n`);
+  process.stdout.write(`  cipherforge --input-dir DIR --output-dir DIR ...    Batch-mode: run the pipe on every file in DIR\n`);
+  process.stdout.write(`  cipherforge --filter "*.js" --recursive ...        Limit batch-mode files (glob) and recurse into sub-dirs\n`);
   process.stdout.write(`\nExamples:\n`);
   process.stdout.write(`  echo SGVsbG8= | cipherforge from-base64\n`);
   process.stdout.write(`  echo "Wm9pIQ==" | cipherforge --pipe "from-base64; reverse"\n`);
   process.stdout.write(`  cat suspicious.js.gz | cipherforge --pipe "gunzip; js-beautify"\n`);
+  process.stdout.write(`  cipherforge --input-dir ./script --output-dir ./decoded --filter '*.js' \\\n`);
+  process.stdout.write(`             --pipe "webcrack; js-obfuscator-io-strings; js-strip-anti-debug; js-beautify"\n`);
 }
 
 async function magic(input: Uint8Array): Promise<void> {
@@ -138,6 +166,11 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (parsed.command === 'batch') {
+    await runBatch(parsed);
+    return;
+  }
+
   const input = parsed.inputFile
     ? new Uint8Array(await readFile(parsed.inputFile))
     : await readStdin();
@@ -161,11 +194,23 @@ async function main(): Promise<void> {
     enabled: true,
   }));
   const result = await runPipeline(input, recipe);
+  // By default each failed step is treated as a no-op: its `current` buffer is
+  // passed through unchanged so later steps can still make progress (the same
+  // contract Universal Decode relies on). We surface the failures on stderr so
+  // they're visible. Pass --strict to revert to fail-fast behaviour.
+  let failed = 0;
   for (const step of result.steps) {
     if (step.error) {
-      process.stderr.write(`error in ${step.opId}: ${step.error}\n`);
-      process.exit(1);
+      failed++;
+      process.stderr.write(`warning: ${step.opId} failed: ${step.error}\n`);
     }
+  }
+  if (parsed.strict && failed > 0) {
+    process.exit(1);
+  }
+  // If every step failed, treat the run as failed even without --strict.
+  if (failed > 0 && failed === result.steps.length) {
+    process.exit(1);
   }
 
   if (parsed.outputBinary) {
@@ -174,6 +219,132 @@ async function main(): Promise<void> {
     process.stdout.write(new TextDecoder().decode(result.finalOutput));
     if (process.stdout.isTTY) process.stdout.write('\n');
   }
+}
+
+/**
+ * Batch mode: run the same pipe over every file in `--input-dir` and write
+ * results to `--output-dir`. We deliberately keep this independent of the
+ * single-file path so its semantics (per-file error isolation, per-file
+ * timing summary, output naming) stay obvious.
+ */
+async function runBatch(parsed: Parsed): Promise<void> {
+  if (!parsed.inputDir) {
+    process.stderr.write('--input-dir is required for batch mode\n');
+    process.exit(2);
+  }
+  if (!parsed.outputDir) {
+    process.stderr.write('--output-dir is required for batch mode\n');
+    process.exit(2);
+  }
+  if (parsed.pipe.length === 0) {
+    process.stderr.write('Batch mode requires a pipeline (use --pipe "op1; op2; ...")\n');
+    process.exit(2);
+  }
+  for (const step of parsed.pipe) {
+    if (!getOp(step.opId)) {
+      process.stderr.write(`Unknown operation: ${step.opId}\n`);
+      process.exit(2);
+    }
+  }
+  const files = await collectFiles(parsed.inputDir, parsed.recursive, parsed.filterGlob);
+  if (files.length === 0) {
+    process.stderr.write(`No files matched in ${parsed.inputDir}\n`);
+    process.exit(2);
+  }
+  await mkdir(parsed.outputDir, { recursive: true });
+  process.stderr.write(`Batch: ${files.length} file(s) -> ${parsed.outputDir}\n`);
+
+  const recipe = parsed.pipe.map((s, i) => ({
+    uid: String(i),
+    opId: s.opId,
+    args: s.args,
+    enabled: true,
+  }));
+
+  let okCount = 0;
+  let failCount = 0;
+  let warnCount = 0;
+  const t0 = Date.now();
+  for (const inPath of files) {
+    const rel = relative(parsed.inputDir, inPath);
+    const outPath = join(parsed.outputDir, rel);
+    await mkdir(dirname(outPath), { recursive: true });
+    const fileT0 = Date.now();
+    try {
+      const input = new Uint8Array(await readFile(inPath));
+      const result = await runPipeline(input, recipe);
+      const failed = result.steps.filter((s) => s.error);
+      if (parsed.strict && failed.length > 0) {
+        for (const f of failed) {
+          process.stderr.write(`  ${rel}: ${f.opId} failed: ${f.error}\n`);
+        }
+        failCount++;
+        continue;
+      }
+      if (failed.length > 0) {
+        warnCount++;
+        for (const f of failed) {
+          process.stderr.write(`  ${rel}: warn ${f.opId}: ${f.error}\n`);
+        }
+      }
+      await writeFile(outPath, Buffer.from(result.finalOutput));
+      const elapsedMs = Date.now() - fileT0;
+      const outSize = result.finalOutput.length;
+      const ratio = input.length > 0 ? (input.length / Math.max(outSize, 1)).toFixed(1) : '?';
+      process.stderr.write(
+        `  ${rel}: ${input.length} -> ${outSize} (${ratio}x) in ${elapsedMs}ms\n`,
+      );
+      okCount++;
+    } catch (err) {
+      failCount++;
+      process.stderr.write(
+        `  ${rel}: ERROR ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
+  }
+  const totalMs = Date.now() - t0;
+  process.stderr.write(
+    `Batch done: ${okCount} ok, ${warnCount} with warnings, ${failCount} failed in ${totalMs}ms\n`,
+  );
+  if (failCount > 0) process.exit(1);
+}
+
+async function collectFiles(
+  root: string,
+  recursive: boolean,
+  filterGlob: string | undefined,
+): Promise<string[]> {
+  const matcher = filterGlob ? compileGlob(filterGlob) : null;
+  const out: string[] = [];
+  async function walk(dir: string): Promise<void> {
+    const entries = await readdir(dir);
+    for (const name of entries) {
+      const full = join(dir, name);
+      const st = await stat(full);
+      if (st.isDirectory()) {
+        if (recursive) await walk(full);
+        continue;
+      }
+      if (!st.isFile()) continue;
+      if (matcher && !matcher(basename(full))) continue;
+      out.push(full);
+    }
+  }
+  await walk(root);
+  out.sort();
+  return out;
+}
+
+function compileGlob(glob: string): (name: string) => boolean {
+  // Tiny glob support: `*`, `?`, and literal chars. Sufficient for the
+  // 90% case (`*.js`, `*.txt`, `dashboard.*`). We escape regex metas and
+  // expand `*` -> `.*`, `?` -> `.`.
+  const re = new RegExp(
+    '^' +
+      glob.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') +
+      '$',
+  );
+  return (name) => re.test(name);
 }
 
 main().catch((err) => {
