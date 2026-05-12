@@ -11,6 +11,14 @@ export interface MagicCandidate {
   preview?: string;
 }
 
+export interface MagicChainStep {
+  opId: string;
+  opName: string;
+  preview: string;
+  /** Score (0..1) of how readable the output became. */
+  score: number;
+}
+
 /**
  * Try to guess the right operation to apply next, à la CyberChef Magic.
  *
@@ -55,6 +63,67 @@ export async function suggestNextOp(input: Uint8Array): Promise<MagicCandidate[]
   const hasSpaces = countSpaces(input) > 2;
   if (baseScore > 0.95 && baseEntropy < 4.5 && hasSpaces) return [];
   return results;
+}
+
+/**
+ * Recursively chain decoders: apply the best detected op, score the result,
+ * and recurse until no detector fires above threshold or readability stops
+ * improving. Returns the chain of steps that led from `input` to the final
+ * (most-readable) output.
+ */
+export async function recursiveMagic(input: Uint8Array, maxDepth = 6): Promise<MagicChainStep[]> {
+  const chain: MagicChainStep[] = [];
+  let cur = input;
+  const seen = new Set<string>(); // avoid cycles via a fingerprint of content
+
+  for (let depth = 0; depth < maxDepth; depth++) {
+    // Score every detector. Prefer strong detectors (compression / format
+    // sniffers) over weaker ones so that "the bytes start with 1F 8B" beats
+    // "looks vaguely Base32".
+    const fingerprint = quickFingerprint(cur);
+    if (seen.has(fingerprint)) break;
+    seen.add(fingerprint);
+
+    const cands = await suggestNextOp(cur);
+    if (cands.length === 0) break;
+
+    // Continue when ANY of:
+    //   • A detector fires confidently (binary signature, JWT shape, …).
+    //   • Running the candidate makes output more readable.
+    //   • This is the first step (we trust the user clicked Auto-chain on something they want decoded).
+    // For deeper steps we require either a strong hit OR a readability gain.
+    const lastScore = printableRatio(cur);
+    const best = cands[0];
+    const strongHit = best.confidence >= 0.5;
+    const improves = (best.postScore ?? 0) > lastScore + 0.1;
+    if (depth > 0 && !strongHit && !improves) break;
+    if (depth === 0 && best.confidence < 0.3 && !improves) break;
+
+    let out: Uint8Array;
+    try {
+      const raw = await Promise.resolve(best.op.run(cur, defaultArgs(best.op)));
+      out = typeof raw === 'string' ? new TextEncoder().encode(raw) : raw;
+    } catch {
+      break;
+    }
+    chain.push({
+      opId: best.op.id,
+      opName: best.op.name,
+      preview: new TextDecoder().decode(out.slice(0, 120)),
+      score: printableRatio(out),
+    });
+    cur = out;
+  }
+  return chain;
+}
+
+function quickFingerprint(bytes: Uint8Array): string {
+  // Cheap content fingerprint — first 8 bytes + length. Enough to detect that
+  // we've come back to a buffer we already processed.
+  const head = Array.from(bytes.slice(0, 8))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+  return `${bytes.length}:${head}`;
 }
 
 function countSpaces(input: Uint8Array): number {

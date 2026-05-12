@@ -1,4 +1,5 @@
 import { fromBase32, toBase32 } from './encoding/base32';
+import { fromBase45, toBase45 } from './encoding/base45';
 import { fromBase58, toBase58 } from './encoding/base58';
 import { fromBase64, toBase64 } from './encoding/base64';
 import { fromBase85, toBase85 } from './encoding/base85';
@@ -14,9 +15,12 @@ import {
   toDecimal,
   toOctal,
 } from './encoding/numeric';
+import { pemDecode, pemEncode } from './encoding/pem';
+import { fromPunycode, toPunycode } from './encoding/punycode';
 import { fromQuotedPrintable, toQuotedPrintable } from './encoding/quoted-printable';
 import { unicodeEscape, unicodeUnescape } from './encoding/unicode';
 import { urlDecode, urlEncode } from './encoding/url';
+import { zeroWidthDecode, zeroWidthEncode } from './encoding/zerowidth';
 import { a1z26Decode, a1z26Encode } from './cipher/a1z26';
 import { affineDecrypt, affineEncrypt } from './cipher/affine';
 import { baconDecode, baconEncode } from './cipher/bacon';
@@ -24,6 +28,7 @@ import { atbash, caesar, caesarBruteForce, rot13, rot47 } from './cipher/caesar'
 import { polybiusDecode, polybiusEncode } from './cipher/polybius';
 import { railFenceDecrypt, railFenceEncrypt } from './cipher/railfence';
 import { vigenereDecrypt, vigenereEncrypt } from './cipher/vigenere';
+import { vigenereBrute } from './cipher/vigenere_brute';
 import { xor, xorBruteSingleByte } from './cipher/xor';
 import { aesDecrypt, aesEncrypt, desDecrypt, desEncrypt, rc4 } from './crypto/aes';
 import {
@@ -47,6 +52,21 @@ import {
   evalUnpack,
   webcrackDeobfuscate,
 } from './javascript/deobfuscate';
+import { aaencodeDecode } from './javascript/aaencode';
+import { benSbObfIo } from './javascript/bensb_obf_io';
+import { obfuscatorIoStringArrayDecode } from './javascript/obfuscator_io_string_array';
+import { stripAntiDebug } from './javascript/anti_debug';
+import { fromCharCodeUnwrap } from './javascript/charcode';
+import { constantFold } from './javascript/constant_fold';
+import { deadCodeElim } from './javascript/dead_code';
+import { evalAtobUnwrap } from './javascript/eval_atob';
+import { jjencodeDecode } from './javascript/jjencode';
+import { jsfuckDecode } from './javascript/jsfuck';
+import { packerUnpack } from './javascript/packer';
+import { smartRename } from './javascript/smart_rename';
+import { synchrony } from './javascript/synchrony';
+import { xorBrute } from './cipher/xor_brute';
+import { universalDecode } from './universal';
 import { extractStrings, fileInspect } from './binary/strings';
 import {
   deflate,
@@ -57,6 +77,12 @@ import {
   zlibInflate,
 } from './compression/gzip';
 import {
+  fromDecimalCodePoints,
+  toDecimalUnicode,
+} from './format/decimal_unicode';
+import { lineDiff } from './format/diff';
+import { hexdump } from './format/hexdump';
+import {
   jsonFormat,
   jsonMinify,
   lower,
@@ -65,6 +91,8 @@ import {
   stripWhitespace,
   upper,
 } from './format/json';
+import { parseQueryString } from './format/qs';
+import { parseUrl } from './format/url';
 import type { OpCategory, OpDefinition } from './types';
 
 export const ALL_OPS: OpDefinition[] = [
@@ -77,6 +105,8 @@ export const ALL_OPS: OpDefinition[] = [
   fromBase58,
   toBase85,
   fromBase85,
+  toBase45,
+  fromBase45,
   toHex,
   fromHex,
   urlEncode,
@@ -96,6 +126,12 @@ export const ALL_OPS: OpDefinition[] = [
   toMorse,
   fromMorse,
   decodeJwt,
+  toPunycode,
+  fromPunycode,
+  pemEncode,
+  pemDecode,
+  zeroWidthEncode,
+  zeroWidthDecode,
 
   // Ciphers
   caesar,
@@ -105,8 +141,10 @@ export const ALL_OPS: OpDefinition[] = [
   caesarBruteForce,
   vigenereEncrypt,
   vigenereDecrypt,
+  vigenereBrute,
   xor,
   xorBruteSingleByte,
+  xorBrute,
   affineEncrypt,
   affineDecrypt,
   railFenceEncrypt,
@@ -143,7 +181,20 @@ export const ALL_OPS: OpDefinition[] = [
   // JavaScript
   beautify,
   webcrackDeobfuscate,
+  benSbObfIo,
+  obfuscatorIoStringArrayDecode,
+  stripAntiDebug,
+  synchrony,
+  smartRename,
+  constantFold,
+  deadCodeElim,
   evalUnpack,
+  evalAtobUnwrap,
+  packerUnpack,
+  jsfuckDecode,
+  jjencodeDecode,
+  aaencodeDecode,
+  fromCharCodeUnwrap,
   escapeStringsToText,
 
   // Binary
@@ -159,8 +210,15 @@ export const ALL_OPS: OpDefinition[] = [
   zlibInflate,
 
   // Format
+  universalDecode,
   jsonFormat,
   jsonMinify,
+  hexdump,
+  parseUrl,
+  parseQueryString,
+  toDecimalUnicode,
+  fromDecimalCodePoints,
+  lineDiff,
   reverseText,
   upper,
   lower,

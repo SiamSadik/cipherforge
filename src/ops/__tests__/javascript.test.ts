@@ -21,6 +21,16 @@ describe('javascript helpers', () => {
     expect(await run('js-string-literal-decode', "'\\x41\\u0042'")).toBe('AB');
   });
 
+  it('refuses to mangle JS source masquerading as a string literal', async () => {
+    // Bug found in test corpus: input was full JS source; the op was applying
+    // global \" → " replacements over the whole source, corrupting strings
+    // that legitimately contain escaped quotes. It must throw on non-literals
+    // so chained pipelines (Universal Decode) skip it instead of breaking the
+    // syntax of the surrounding code.
+    const source = 'const arr = ["a\\"", "b"]; console.log(arr[0]);';
+    await expect(run('js-string-literal-decode', source)).rejects.toThrow(/string literal/i);
+  });
+
   it('unwraps eval("...") payloads', async () => {
     expect(await run('eval-unpack', 'eval("alert(1)")')).toBe('alert(1)');
     expect(await run('eval-unpack', "eval('var x=1; console.log(x);')")).toBe('var x=1; console.log(x);');
